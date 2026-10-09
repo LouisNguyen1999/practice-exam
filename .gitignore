@@ -1,0 +1,63 @@
+# Dependencies
+
+node_modules/
+
+# Build output
+
+dist/
+build/
+
+# Environment variables
+
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Keep example environment file
+
+!.env.example
+
+# Logs
+
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Testing
+
+coverage/
+
+# IDE
+
+.idea/
+.vscode/
+*.iml
+
+# Operating system
+
+.DS_Store
+Thumbs.db
+
+# Temporary files
+
+*.tmp
+*.swp
+
+# Optional package manager caches
+
+.npm/
+.eslintcache
+.stylelintcache
+
+# Local deployment files
+
+.vercel/
+.netlify/
+
+# TypeScript
+
+*.tsbuildinfo
