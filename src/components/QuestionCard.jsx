@@ -1,3 +1,5 @@
+import QuestionContent, { OptionContent } from "./QuestionContent";
+
 export default function QuestionCard({
   question,
   selected,
@@ -10,7 +12,7 @@ export default function QuestionCard({
         Question {question.number ?? ""}
       </div>
 
-      <h2 className="question-text">{question.question}</h2>
+      <QuestionContent question={question} />
 
       <div className="options">
         {question.options.map((option, index) => {
@@ -33,7 +35,7 @@ export default function QuestionCard({
               disabled={showResult}
             >
               <span className="option-key">{option.id}</span>
-              <span className="option-text">{option.text}</span>
+              <OptionContent option={option} />
 
               {isCorrect && (
                 <span className="answer-badge">Correct</span>

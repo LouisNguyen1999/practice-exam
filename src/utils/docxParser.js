@@ -15,18 +15,26 @@ export async function parseDocx(url, fileName = "document.docx") {
   if (!documentFile) throw new Error(`${fileName} does not contain word/document.xml`);
 
   const xml = new DOMParser().parseFromString(await documentFile.async("text"), "application/xml");
-  const paragraphs = [...xml.getElementsByTagName("w:p")]
-    .map(parseParagraph)
-    .filter((paragraph) => paragraph.text);
+  const imageUrls = await extractImageUrls(zip);
+  const body = xml.getElementsByTagName("w:body")[0];
+  const items = [...(body?.children || [])]
+    .filter((element) => element.tagName === "w:p" || element.tagName === "w:tbl")
+    .map((element) => element.tagName === "w:tbl"
+      ? { type: "table", table: parseTable(element, imageUrls) }
+      : { type: "paragraph", paragraph: parseParagraph(element, imageUrls) })
+    .filter((item) => item.type === "table" || item.paragraph.text || item.paragraph.images.length);
+  const paragraphs = items
+    .filter((item) => item.type === "paragraph")
+    .map((item) => item.paragraph);
 
   const visibleQuestionCount = paragraphs.filter((paragraph) => getVisibleQuestionHeading(paragraph)).length;
   const listQuestionCount = paragraphs.filter((paragraph) => (
     paragraph.numbering?.numId === "11" && paragraph.numbering.level === "0"
   )).length;
   const questions = visibleQuestionCount >= 30
-    ? parseQuestionSections(paragraphs, fileName, false)
+    ? parseQuestionSections(items, fileName, false)
     : listQuestionCount >= 30
-      ? parseQuestionSections(paragraphs, fileName, true)
+      ? parseQuestionSections(items, fileName, true)
     : paragraphs.some((paragraph) => OPTION_RE.test(paragraph.text))
       ? parseLabeledQuestions(paragraphs, fileName)
       : parseUnlabeledQuestions(paragraphs, fileName);
@@ -57,7 +65,7 @@ function parseLabeledQuestions(paragraphs, fileName) {
       if (!current || current.options.length === 0) {
         const text = current
           ? [current.question, ...pending.map((item) => item.text)].filter(Boolean).join(" ")
-          : pending.at(-1)?.text || "";
+          : pending.map((item) => item.text).filter(Boolean).join(" ");
         const labeled = text.match(LABELED_QUESTION_RE);
         const numbered = text.match(NUMBERED_QUESTION_RE);
         current = {
@@ -80,14 +88,19 @@ function parseLabeledQuestions(paragraphs, fileName) {
 }
 
 function parseUnlabeledQuestions(paragraphs, fileName) {
-  return parseQuestionSections(paragraphs, fileName, false);
+  return parseQuestionSections(paragraphs.map((paragraph) => ({ type: "paragraph", paragraph })), fileName, false);
 }
 
-function parseQuestionSections(paragraphs, fileName, useListQuestionMarkers) {
+function parseQuestionSections(items, fileName, useListQuestionMarkers) {
   const questions = [];
   let current = null;
 
-  for (const paragraph of paragraphs) {
+  for (const item of items) {
+    if (item.type !== "paragraph") {
+      if (current) current.items.push(item);
+      continue;
+    }
+    const paragraph = item.paragraph;
     const heading = getVisibleQuestionHeading(paragraph) || (
       useListQuestionMarkers && paragraph.numbering?.numId === "11" && paragraph.numbering.level === "0"
         ? { question: paragraph.text.trim() }
@@ -98,10 +111,11 @@ function parseQuestionSections(paragraphs, fileName, useListQuestionMarkers) {
       current = {
         number: heading.number ?? questions.length + 1,
         question: heading.question,
-        paragraphs: []
+        headingParagraph: paragraph,
+        items: []
       };
     } else if (current) {
-      current.paragraphs.push(paragraph);
+      current.items.push(item);
     }
   }
 
@@ -121,8 +135,33 @@ function getVisibleQuestionHeading(paragraph) {
 }
 
 function finishSection(section, questions, fileName) {
-  const choices = extractSectionChoices(section.paragraphs);
-  addQuestion({ ...section, options: choices }, questions, fileName);
+  const choices = extractSectionChoices(section.items
+    .filter((item) => item.type === "paragraph")
+    .map((item) => item.paragraph));
+  const firstChoice = choices[0]?.paragraph;
+  const questionItems = firstChoice
+    ? section.items.slice(0, section.items.findIndex((item) => item.type === "paragraph" && item.paragraph === firstChoice))
+    : section.items;
+  const questionParts = [section.question, ...questionItems.map(getItemText)].filter(Boolean);
+  const richContent = questionItems.some((item) => item.type === "table" || item.paragraph.images.length)
+    ? [
+        { type: "paragraph", text: section.question, images: section.headingParagraph.images },
+        ...questionItems.map((item) => item.type === "table"
+          ? item.table
+          : { type: "paragraph", text: item.paragraph.text, images: item.paragraph.images })
+      ]
+    : undefined;
+  addQuestion({
+    ...section,
+    question: normalizeWhitespace(questionParts.join(" ")),
+    richContent,
+    options: choices.map(({ paragraph, ...choice }) => choice)
+  }, questions, fileName);
+}
+
+function getItemText(item) {
+  if (item.type === "paragraph") return item.paragraph.text;
+  return item.table.rows.map((row) => row.map((cell) => cell.text).join(" | ")).join(" ");
 }
 
 function extractSectionChoices(paragraphs) {
@@ -131,7 +170,9 @@ function extractSectionChoices(paragraphs) {
   // Some Word files put all A/B/C/D answers in one paragraph without line breaks.
   for (const paragraph of usable) {
     const inlineOptions = splitInlineOptions(paragraph);
-    if (inlineOptions.length >= 2) return inlineOptions;
+    if (inlineOptions.length >= 2) {
+      return inlineOptions.map((option) => ({ ...option, paragraph }));
+    }
   }
 
   const groups = [];
@@ -158,7 +199,9 @@ function extractSectionChoices(paragraphs) {
     return candidate.paragraphs.slice(0, 4).map((paragraph, index) => ({
       id: String.fromCharCode(65 + index),
       text: paragraph.text,
-      correct: paragraph.hasAnswerMark
+      images: paragraph.images,
+      correct: paragraph.hasAnswerMark,
+      paragraph
     }));
   }
 
@@ -166,7 +209,9 @@ function extractSectionChoices(paragraphs) {
   return fallback.map((paragraph, index) => ({
     id: String.fromCharCode(65 + index),
     text: paragraph.text,
-    correct: paragraph.hasAnswerMark
+    images: paragraph.images,
+    correct: paragraph.hasAnswerMark,
+    paragraph
   }));
 }
 
@@ -214,12 +259,84 @@ function addQuestion(current, questions, fileName) {
     category: humanizeFileName(fileName),
     number: current.number,
     question: current.question.trim(),
+    ...(current.richContent ? { richContent: current.richContent } : {}),
     options: current.options.map(({ correct: _correct, ...option }) => option),
     correctAnswer: correct.length === 1 ? correct[0].id : null
   });
 }
 
-function parseParagraph(paragraph) {
+async function extractImageUrls(zip) {
+  const relationshipsFile = zip.file("word/_rels/document.xml.rels");
+  if (!relationshipsFile) return new Map();
+
+  const relationshipsXml = new DOMParser().parseFromString(
+    await relationshipsFile.async("text"),
+    "application/xml"
+  );
+  const urlsById = new Map();
+  const urlsByTarget = new Map();
+
+  for (const relationship of relationshipsXml.getElementsByTagName("Relationship")) {
+    const id = relationship.getAttribute("Id");
+    const target = relationship.getAttribute("Target");
+    if (!id || !target || !relationship.getAttribute("Type")?.endsWith("/image") ||
+      relationship.getAttribute("TargetMode") === "External") continue;
+
+    const path = resolveDocumentTarget(target);
+    let url = urlsByTarget.get(path);
+    if (!url) {
+      const imageFile = zip.file(path);
+      if (!imageFile) continue;
+      const extension = path.split(".").at(-1).toLowerCase();
+      const mimeType = ({
+        bmp: "image/bmp",
+        gif: "image/gif",
+        jpeg: "image/jpeg",
+        jpg: "image/jpeg",
+        png: "image/png",
+        svg: "image/svg+xml",
+        tif: "image/tiff",
+        tiff: "image/tiff",
+        webp: "image/webp"
+      })[extension] || "application/octet-stream";
+      url = `data:${mimeType};base64,${await imageFile.async("base64")}`;
+      urlsByTarget.set(path, url);
+    }
+    urlsById.set(id, url);
+  }
+
+  return urlsById;
+}
+
+function resolveDocumentTarget(target) {
+  const parts = target.startsWith("/") ? [] : ["word"];
+  for (const part of target.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return parts.join("/");
+}
+
+function parseTable(table, imageUrls) {
+  const rows = [...table.children]
+    .filter((element) => element.tagName === "w:tr")
+    .map((row) => [...row.children]
+      .filter((element) => element.tagName === "w:tc")
+      .map((cell) => {
+        const paragraphs = [...cell.children]
+          .filter((element) => element.tagName === "w:p")
+          .map((paragraph) => parseParagraph(paragraph, imageUrls));
+        return {
+          text: normalizeWhitespace(paragraphs.map((paragraph) => paragraph.text).filter(Boolean).join(" ")),
+          images: paragraphs.flatMap((paragraph) => paragraph.images)
+        };
+      }));
+
+  return { type: "table", rows };
+}
+
+function parseParagraph(paragraph, imageUrls = new Map()) {
   const runs = [...paragraph.getElementsByTagName("w:r")];
   let text = "";
   let hasAnswerMark = false;
@@ -239,11 +356,16 @@ function parseParagraph(paragraph) {
     }
   }
 
+  const imageIds = [
+    ...[...paragraph.getElementsByTagName("a:blip")].map((node) => node.getAttribute("r:embed")),
+    ...[...paragraph.getElementsByTagName("v:imagedata")].map((node) => node.getAttribute("r:id"))
+  ].filter(Boolean);
   const numbering = paragraph.getElementsByTagName("w:numId")[0];
   const level = paragraph.getElementsByTagName("w:ilvl")[0];
   return {
     text: normalizeWhitespace(text),
     rawText: text,
+    images: imageIds.map((id) => imageUrls.get(id)).filter(Boolean),
     hasAnswerMark,
     markedRanges,
     numbering: numbering ? {

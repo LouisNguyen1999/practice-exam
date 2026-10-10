@@ -1,17 +1,27 @@
 import { useMemo, useState } from "react";
 import { Search, SlidersHorizontal } from "lucide-react";
+import QuestionContent, { OptionContent } from "../components/QuestionContent";
 
 export default function QuestionBank({ bank }) {
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("All");
+  const [source, setSource] = useState("All");
 
-  const categories = ["All", ...new Set(bank.questions.map((q) => q.category))];
+  const sources = [...new Map(
+    bank.questions.map((question) => {
+      const name = String(question.source || question.category || "").trim();
+      return [name, { value: name, label: question.category || name }];
+    }).filter(([name]) => name)
+  ).values()];
+  const selectedSource = sources.some((item) => item.value === source)
+    ? source
+    : sources.find((item) => item.label === source)?.value || "All";
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
 
     return bank.questions.filter((q) => {
-      const matchesCategory = category === "All" || q.category === category;
+      const questionSource = String(q.source || q.category || "").trim();
+      const matchesSource = selectedSource === "All" || questionSource === selectedSource;
       const haystack = [
         q.question,
         q.category,
@@ -19,9 +29,9 @@ export default function QuestionBank({ bank }) {
         ...q.options.map((option) => option.text)
       ].join(" ").toLowerCase();
 
-      return matchesCategory && (!query || haystack.includes(query));
+      return matchesSource && (!query || haystack.includes(query));
     });
-  }, [bank.questions, search, category]);
+  }, [bank.questions, search, selectedSource]);
 
   return (
     <div className="container">
@@ -45,8 +55,9 @@ export default function QuestionBank({ bank }) {
 
         <div className="select-box">
           <SlidersHorizontal size={17} />
-          <select value={category} onChange={(event) => setCategory(event.target.value)}>
-            {categories.map((item) => <option key={item}>{item}</option>)}
+          <select value={selectedSource} onChange={(event) => setSource(event.target.value)}>
+            <option value="All">All</option>
+            {sources.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
           </select>
         </div>
       </div>
@@ -59,12 +70,12 @@ export default function QuestionBank({ bank }) {
               <span className="category-pill">{question.category}</span>
               <span className="source-pill">{question.source}</span>
             </div>
-            <h3>{question.question}</h3>
+            <QuestionContent question={question} className="bank-question-content" as="div" />
             <div className="bank-options">
               {question.options.map((option) => (
                 <div className={`bank-option ${option.id === question.correctAnswer ? "is-correct" : ""}`} key={`${question.id}-${option.id}-${index}`}>
                   <strong>{option.id}</strong>
-                  <span>{option.text}</span>
+                  <OptionContent option={option} />
                 </div>
               ))}
             </div>
