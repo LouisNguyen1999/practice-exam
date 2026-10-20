@@ -66,7 +66,7 @@ export default function QuestionBank({ bank }) {
         {filtered.map((question, index) => (
           <article className="bank-question" key={question.id}>
             <div className="bank-question-top">
-              <span>#{index + 1}</span>
+              <span>#{question.number ?? index + 1}</span>
               <span className="category-pill">{question.category}</span>
               <span className="source-pill">{question.source}</span>
             </div>

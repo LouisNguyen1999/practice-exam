@@ -175,6 +175,49 @@ function extractSectionChoices(paragraphs) {
     }
   }
 
+  const labeledOptions = usable.flatMap((paragraph, index) => {
+    const match = paragraph.text.match(OPTION_RE);
+    return match ? [{
+      id: match[1].toUpperCase(),
+      text: match[2].trim(),
+      images: paragraph.images,
+      correct: paragraph.hasAnswerMark,
+      paragraph,
+      index
+    }] : [];
+  });
+
+  if (labeledOptions.length) {
+    const explicitIds = new Set(labeledOptions.map((option) => option.id));
+    const missingIds = ["A", "B", "C", "D"].filter((id) => !explicitIds.has(id));
+    let start = Math.min(...labeledOptions.map((option) => option.index));
+    let end = Math.max(...labeledOptions.map((option) => option.index));
+    const isUnlabeledNumberedParagraph = (paragraph) => (
+      Boolean(paragraph.numbering) && !OPTION_RE.test(paragraph.text)
+    );
+
+    // A/B are sometimes Word auto-numbered, while C/D are typed into plain
+    // paragraphs. Include adjacent numbered paragraphs and assign the missing
+    // letters in order, even when only one auto-numbered choice is present.
+    while (start > 0 && isUnlabeledNumberedParagraph(usable[start - 1])) start -= 1;
+    while (end + 1 < usable.length && isUnlabeledNumberedParagraph(usable[end + 1])) end += 1;
+    const inferredParagraphs = usable.slice(start, end + 1)
+      .filter(isUnlabeledNumberedParagraph)
+      .slice(0, missingIds.length);
+    const optionsById = new Map(labeledOptions.map(({ index: _index, ...option }) => [option.id, option]));
+    inferredParagraphs.forEach((paragraph, index) => {
+      const id = missingIds[index];
+      if (id) optionsById.set(id, {
+        id,
+        text: paragraph.text,
+        images: paragraph.images,
+        correct: paragraph.hasAnswerMark,
+        paragraph
+      });
+    });
+    return [...optionsById.values()].sort((a, b) => a.id.localeCompare(b.id));
+  }
+
   const groups = [];
   for (const paragraph of usable) {
     const id = paragraph.numbering?.numId;
@@ -196,13 +239,15 @@ function extractSectionChoices(paragraphs) {
     })[0];
 
   if (candidate) {
-    return candidate.paragraphs.slice(0, 4).map((paragraph, index) => ({
+    const inferredOptions = candidate.paragraphs.slice(0, 4).map((paragraph, index) => ({
       id: String.fromCharCode(65 + index),
       text: paragraph.text,
       images: paragraph.images,
       correct: paragraph.hasAnswerMark,
       paragraph
-    }));
+    })).filter((option) => !OPTION_RE.test(option.paragraph.text));
+
+    return inferredOptions;
   }
 
   const fallback = usable.slice(0, 4);
